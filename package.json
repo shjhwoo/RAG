@@ -1,13 +1,13 @@
 {
   "name": "mnemosyne",
   "version": "1.0.0",
-  "description": "## 아키텍처",
+  "description": "raw 데이터를 LLM 위키로 정리하고, 원문 근거는 벡터 검색(RAG)으로 찾아 답하는 지식베이스",
   "type": "module",
-  "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "ingest": "tsx src/ingest.ts",
+    "query": "tsx src/query.ts",
+    "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "start": "node dist/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
