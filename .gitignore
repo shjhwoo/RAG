@@ -2,3 +2,5 @@ node_modules
 .env
 dist
 .omc/
+storage/vector_store/
+storage/wiki/
