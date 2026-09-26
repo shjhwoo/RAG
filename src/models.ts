@@ -12,6 +12,8 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 // EMBED_PROVIDER를 바꾸면 ingest를 다시 실행해서 인덱스를 새로 만들어야 하고,
 // ingest와 query는 반드시 같은 EMBED_PROVIDER로 실행해야 한다.
 // (채팅 모델은 언제 바꿔도 인덱스에 영향이 없다)
+// VECTOR_STORE=pgvector 이면 차원이 DB 스키마(src/db/schema.ts의 EMBEDDING_DIMENSIONS)에도 고정되어 있어서,
+// 임베딩 모델을 바꿀 때 그 값을 바꾸고 db:generate / db:migrate 도 해야 한다.
 
 const OLLAMA_URL = "http://127.0.0.1:11434";
 const OLLAMA_CHAT_MODEL = "qwen3:8b";

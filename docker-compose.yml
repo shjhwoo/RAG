@@ -1,0 +1,24 @@
+# 로컬 개발용 PostgreSQL + pgvector. 비밀번호는 로컬 전용 값이므로 운영에 쓰지 않는다.
+#   docker compose up -d      # 시작
+#   docker compose down       # 중지 (데이터는 볼륨에 남는다)
+#   docker compose down -v    # 중지 + 데이터 삭제
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: mnemosyne-db
+    environment:
+      POSTGRES_USER: mnemosyne
+      POSTGRES_PASSWORD: mnemosyne
+      POSTGRES_DB: mnemosyne
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mnemosyne -d mnemosyne"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:
