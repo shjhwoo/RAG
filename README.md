@@ -36,6 +36,40 @@ npm run typecheck                # 타입 검사
 
 `ingest`는 이미 위키에 반영된 raw 파일은 건너뛴다. 벡터 인덱스는 매번 raw 전체로 새로 만든다.
 
+### pgvector (PostgreSQL) 벡터 스토어
+
+기본 벡터 스토어는 `storage/vector_store/store.json`이다. PostgreSQL + pgvector를 쓰려면:
+
+`.env`에 다음을 추가한다.
+
+```
+VECTOR_STORE=pgvector
+DATABASE_URL=postgresql://mnemosyne:mnemosyne@localhost:5432/mnemosyne
+```
+
+```bash
+docker compose up -d --wait                # 1. pgvector/pgvector:pg17 컨테이너 (localhost:5432, 로컬 전용 계정)
+npm run db:migrate                         # 2. 마이그레이션 적용 (pgvector 확장 + raw_chunks 테이블). 처음 한 번, 스키마가 바뀔 때마다
+npm run embed                              # 3. raw → 청킹 → 임베딩 → 벡터 스토어까지만 (위키/채팅 모델 호출 없음)
+npm run search -- "llm wiki" 5             # 검색만 실행해 상위 청크와 점수를 본다 (GOOGLE_API_KEY 불필요)
+npm run eval                               # 정답을 미리 정해 둔 질문들로 검색 품질 평가
+npm run eval -- --parity                   # json과 pgvector의 순위·점수가 같은지 비교 (두 스토어 모두 embed 필요)
+```
+
+`ingest`와 `query`도 `VECTOR_STORE`를 따른다. 스토어를 바꿀 때는 `ingest`(또는 `embed`)를 그 스토어로 다시 실행한다. `docker compose down`은 데이터를 남기고, `docker compose down -v`는 데이터까지 지운다.
+
+스키마는 [Drizzle](https://orm.drizzle.team)로 관리한다. 원본은 `src/db/schema.ts`이고, 스키마를 바꾸는 순서는 이렇다.
+
+```bash
+# src/db/schema.ts 수정 후
+npm run db:generate                        # drizzle/ 아래에 마이그레이션 SQL 생성 (생성된 SQL을 읽어 확인한다)
+npm run db:migrate                         # DB에 적용. 적용 이력은 DB의 drizzle.__drizzle_migrations 테이블에 남는다
+```
+
+- `drizzle/0000_enable_pgvector.sql`은 `CREATE EXTENSION`을 직접 쓴 마이그레이션이다. drizzle-kit은 확장 활성화를 만들어 주지 않는다.
+- `embed`/`ingest`는 테이블을 `TRUNCATE`하고 다시 채울 뿐 스키마는 건드리지 않는다. 테이블이 없으면 `db:migrate`를 먼저 실행하라고 안내한다.
+- **벡터 차원(`EMBEDDING_DIMENSIONS`, 기본 1024)이 스키마에 고정된다.** pgvector에서 `EMBED_PROVIDER=openai`(1536)를 쓰려면 `schema.ts`의 값을 바꾸고 `db:generate` → `db:migrate` 해야 한다. 기존 벡터가 있는 컬럼의 차원은 변환되지 않으므로, 이 마이그레이션은 `TRUNCATE` 후 `embed`를 다시 실행하는 것과 함께 해야 한다. (JSON 스토어는 차원을 스스로 읽는다)
+
 ### 모델 설정 (`.env`)
 
 채팅 모델과 임베딩 모델의 제공자를 따로 고른다 (`src/models.ts`).
@@ -45,9 +79,10 @@ npm run typecheck                # 타입 검사
 | `CHAT_PROVIDER` | `gemini` \| `openai` \| `ollama` | `gemini` | 위키 작성, 질의응답에 쓰는 채팅 모델 |
 | `EMBED_PROVIDER` | `ollama` \| `openai` | `ollama` | 임베딩 모델 (`bge-m3` / `text-embedding-3-small`) |
 | `GEMINI_CHAT_MODEL` | 모델 이름 | `gemini-3.5-flash-lite` | Gemini 모델 이름은 자주 바뀌므로 덮어쓸 수 있다 |
+| `VECTOR_STORE` | `json` \| `pgvector` | `json` | 벡터 저장소. `pgvector`는 `DATABASE_URL`이 필요하다 |
 
 - `openai`를 쓰려면 `OPENAI_API_KEY`가 필요하다. `ollama` 채팅은 `qwen3:8b`를 쓰며 메모리를 6GB 이상 쓰고 CPU에서는 느리다.
-- **`EMBED_PROVIDER`를 바꾸면 벡터 차원이 달라진다.** `npm run ingest`를 다시 실행해 인덱스를 새로 만들어야 하고, `ingest`와 `query`는 같은 값으로 실행해야 한다. (채팅 모델은 언제 바꿔도 된다)
+- **`EMBED_PROVIDER`를 바꾸면 벡터 차원이 달라진다.** `npm run ingest`를 다시 실행해 인덱스를 새로 만들어야 하고, `ingest`와 `query`는 같은 값으로 실행해야 한다. (채팅 모델은 언제 바꿔도 된다) `VECTOR_STORE=pgvector`에서는 스키마의 차원도 함께 바꿔야 한다 (아래 pgvector 절 참고).
 
 ## 아키텍처
 
@@ -124,7 +159,9 @@ flowchart TD
 
 ### 벡터 스토어를 직접 구현한 이유
 
-`src/vectorstore.ts`는 코사인 유사도를 전수 비교로 계산하는 순수 TypeScript 구현이다. 처음에는 `hnswlib-node`를 썼지만, 이 환경(Windows)에서 직접 빌드한 네이티브 모듈이 초기화 전 `getCurrentCount()`에서 간헐적으로 쓰레기 값을 돌려줘서 인덱스 생성이 실패했다. 청크가 수십~수백 개인 규모에서는 전수 비교로 충분하고, 규모가 커지면 pgvector 등으로 옮긴다.
+`src/vectorstore.ts`는 코사인 유사도를 전수 비교로 계산하는 순수 TypeScript 구현이다. 처음에는 `hnswlib-node`를 썼지만, 이 환경(Windows)에서 직접 빌드한 네이티브 모듈이 초기화 전 `getCurrentCount()`에서 간헐적으로 쓰레기 값을 돌려줘서 인덱스 생성이 실패했다. 청크가 수십~수백 개인 규모에서는 전수 비교로 충분하다.
+
+`src/pgvectorstore.ts`는 같은 인터페이스의 PostgreSQL + pgvector 구현이다 (`VECTOR_STORE=pgvector`). 코사인 거리 연산자 `<=>`의 결과를 `1 - 거리`로 바꿔 JSON 스토어와 같은 유사도로 돌려주며, `npm run eval -- --parity`로 두 구현의 순위와 점수가 같은지 확인할 수 있다. 테이블 스키마는 코드가 아니라 Drizzle 마이그레이션이 만든다(위 참고). 색인할 때마다 테이블을 `TRUNCATE`하고 다시 채운다. HNSW 인덱스를 만들어 두지만 행이 수십 개인 지금은 플래너가 쓰지 않고 전수 스캔한다.
 
 ## 디렉토리 구조
 
@@ -140,9 +177,18 @@ mnemosyne/
 │   ├── wiki.ts                 # 위키 파일 다루기: 읽기/저장, frontmatter, 역링크, index.md
 │   ├── raw.ts                  # raw 읽기(읽기 전용)와 청킹 + 출처 메타데이터
 │   ├── vectorstore.ts          # 순수 TS 벡터 스토어 (코사인 유사도, JSON 저장)
+│   ├── pgvectorstore.ts        # PostgreSQL + pgvector 벡터 스토어 (Drizzle 쿼리. 스키마는 만들지 않는다)
+│   ├── db/schema.ts            # raw_chunks 테이블 스키마 (Drizzle). 스키마의 유일한 원본
+│   ├── store.ts                # VECTOR_STORE에 따라 위 두 스토어 중 하나를 고른다
+│   ├── embed.ts                # 색인만 (위키/채팅 모델 호출 없음)
+│   ├── search.ts               # 검색만 (상위 청크와 점수 출력)
+│   ├── eval.ts                 # 검색 품질 평가, json/pgvector 결과 비교
 │   ├── context.ts              # 질의 맥락과 프롬프트 만들기 (순수 함수)
 │   └── models.ts               # 채팅/임베딩 모델 제공자 선택 (Gemini / OpenAI / Ollama)
-├── .env                        # [Config] GOOGLE_API_KEY 등 (git 무시)
+├── drizzle/                    # DB 마이그레이션 SQL (커밋 대상)
+├── drizzle.config.ts           # drizzle-kit 설정
+├── docker-compose.yml          # 로컬 PostgreSQL + pgvector
+├── .env                        # [Config] GOOGLE_API_KEY, VECTOR_STORE, DATABASE_URL 등 (git 무시)
 ├── package.json
 └── tsconfig.json
 ```
@@ -187,6 +233,7 @@ mnemosyne/
 - [x] raw 원문 기준 RAG 인덱싱 (출처 메타데이터 포함, 코사인 유사도 검색)
 - [x] 위키 + 원문 근거로 답변, 참고한 맥락 출력
 - [x] 채팅/임베딩 제공자 선택 (Gemini, OpenAI, Ollama)
+- [x] PostgreSQL + pgvector 벡터 스토어 (`VECTOR_STORE=pgvector`), 검색 품질 평가 스크립트
 - [ ] BM25 키워드 검색 + 하이브리드 검색
 - [ ] 질문 유형별 라우팅 (개념 질문은 위키, 근거 확인은 RAG, 전략 질문은 둘 다)
 - [ ] 위키 문서가 많을 때 관련 문서만 고르는 단계

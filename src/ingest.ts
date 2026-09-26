@@ -2,7 +2,7 @@ import path from "path";
 import dotenv from "dotenv";
 import { createChatModel, createEmbeddings } from "./models.js";
 import { chunkRawFiles, readRawFiles } from "./raw.js";
-import { SimpleVectorStore } from "./vectorstore.js";
+import { buildStore, storeLocation } from "./store.js";
 import {
   addBacklinks,
   listPages,
@@ -127,7 +127,6 @@ ${linkableNames.length ? linkableNames.join(", ") : "없음"}
 async function runIngest() {
   const rawDir = path.join(process.cwd(), "storage/raw");
   const wikiDir = path.join(process.cwd(), "storage/wiki");
-  const vectorStorePath = path.join(process.cwd(), "storage/vector_store");
 
   // 1. Raw 데이터 읽기 (Immutable)
   const rawFiles = await readRawFiles(rawDir);
@@ -141,11 +140,11 @@ async function runIngest() {
   //    위키와 서로 의존하지 않으므로, LLM 오류가 잦은 위키 갱신보다 먼저 한다.
   //    fromDocuments는 매번 새 인덱스를 만들므로 재실행해도 청크가 중복되지 않는다.
   const docs = await chunkRawFiles(rawFiles);
-  const vectorStore = await SimpleVectorStore.fromDocuments(docs, createEmbeddings());
-  await vectorStore.save(vectorStorePath);
+  const vectorStore = await buildStore(docs, createEmbeddings());
+  await vectorStore.close();
   console.log(
     `2. 벡터 데이터베이스 인덱싱 완료 (청크 ${docs.length}개):`,
-    vectorStorePath,
+    storeLocation(),
   );
 
   // 3. LLM Wiki 갱신: 파일 하나씩 순서대로 (앞 파일이 만든 문서를 다음 파일이 볼 수 있다)
